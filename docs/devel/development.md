@@ -325,9 +325,10 @@ Three basic commands let you run unit, integration and/or e2e tests:
 
 ```sh
 cd kubernetes
-make test  # Run unit tests
+make test # Run every unit test
+make test WHAT=pkg/util/cache GOFLAGS=-v # Run tests of a package verbosely
 make test-integration  # Run integration tests, requires etcd
-go run hack/e2e.go -v --build --up --test --down  # Run e2e tests
+make test-e2e # Run e2e tests
 ```
 
 See the [testing guide](testing.md) for additional information and scenarios.
