@@ -42,6 +42,7 @@ var (
 	// ErrFakePredicate is used for test only. The fake predicates returning false also returns error
 	// as ErrFakePredicate.
 	ErrFakePredicate = newPredicateFailureError("FakePredicateError")
+	ErrPodNotFitsLabels          = newPredicateFailureError("PodFitsLabels")
 )
 
 // InsufficientResourceError is an error type that indicates what kind of resource limit is

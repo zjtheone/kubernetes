@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"strconv"
 	"time"
+	"strings"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
@@ -441,6 +442,37 @@ func PodFitsResources(pod *api.Pod, nodeInfo *schedulercache.NodeInfo) (bool, er
 		return false,
 			newInsufficientResourceError(podCountResourceName, 1, int64(len(nodeInfo.Pods())), allowedPodNumber)
 	}
+
+	// Add disk Quota Check, by zj
+	diskQuota, diskOK := pod.ObjectMeta.Annotations["disk"]
+	if diskOK {
+		glog.V(3).Infof("Add by zj, got the disk quota \"%v\"",diskQuota)
+        } else {
+		glog.V(3).Infof("Add by zj, didn't got the disk quota, use default")
+		diskQuota = "0G"
+	}
+
+	diskQuotaSize := string(diskQuota)
+        diskQuotaSize  = strings.TrimSuffix(diskQuotaSize,"G")
+	diskQuotaSizeInt, err := strconv.ParseInt(diskQuotaSize,10,64)
+	if err != nil {
+		glog.V(3).Infof("Add by zj, diskQuotaSizeInt  %v", diskQuotaSizeInt)
+	}
+
+	// node VolumGroup Free, Unit Gib, tripped the unit
+	nodeVgFree := node.Annotations["vgfree"]
+	nodeVgFreeFloat, err := strconv.ParseFloat(nodeVgFree, 64)
+	if err != nil {
+		glog.V(3).Infof("Add by zj, nodeVgFreeFloat  %v", nodeVgFreeFloat)
+	}
+
+	nodeVgFreeInt32 := int(nodeVgFreeFloat)
+	var nodeVgFreeInt int64
+	nodeVgFreeInt = int64(nodeVgFreeInt32)
+ 	if nodeVgFreeInt < diskQuotaSizeInt {
+		return false, newInsufficientResourceError("VgFree", diskQuotaSizeInt, nodeVgFreeInt, nodeVgFreeInt)
+	}
+
 	podRequest := getResourceRequest(pod)
 	if podRequest.milliCPU == 0 && podRequest.memory == 0 && podRequest.nvidiaGPU == 0 {
 		return true, nil
@@ -718,6 +750,20 @@ func PodFitsHostPorts(pod *api.Pod, nodeInfo *schedulercache.NodeInfo) (bool, er
 	return true, nil
 }
 
+func PodFitsLabels(pod *api.Pod, nodeInfo *schedulercache.NodeInfo) (bool, error) {
+	// Add by zj, pods with same label, not assigned to the same node.
+        clusterId := pod.Labels["clusterId"]
+
+	if clusterId != "" {	
+		for _, pod := range nodeInfo.Pods() {
+			if clusterId == pod.Labels["clusterId"] {
+				return false, ErrPodNotFitsLabels
+			}
+		}
+	}	
+	return true, nil
+}
+
 func getUsedPorts(pods ...*api.Pod) map[int]bool {
 	// TODO: Aggregate it at the NodeInfo level.
 	ports := make(map[int]bool)
@@ -765,6 +811,11 @@ func GeneralPredicates(pod *api.Pod, nodeInfo *schedulercache.NodeInfo) (bool, e
 	if !fit {
 		return fit, err
 	}
+	fit, err = PodFitsLabels(pod, nodeInfo)
+	if !fit {
+		return fit, err
+	}
+
 	return true, nil
 }
 

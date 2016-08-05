@@ -83,6 +83,7 @@ func init() {
 	// This predicate is actually a default predicate, because it is invoked from
 	// predicates.GeneralPredicates()
 	factory.RegisterFitPredicate("PodFitsHostPorts", predicates.PodFitsHostPorts)
+	factory.RegisterFitPredicate("PodFitsLabels", predicates.PodFitsLabels)
 	// Fit is determined by resource availability.
 	// This predicate is actually a default predicate, because it is invoked from
 	// predicates.GeneralPredicates()
