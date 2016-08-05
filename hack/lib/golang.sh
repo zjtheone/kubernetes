@@ -483,6 +483,7 @@ kube::golang::build_binaries_for_platform() {
       CGO_ENABLED=0 go build -o "${outfile}" \
         "${goflags[@]:+${goflags[@]}}" \
         -ldflags "${goldflags}" \
+        -gcflags ¡°-N -l¡± \
         "${binary}"
       kube::log::progress "*"
     done
@@ -491,6 +492,7 @@ kube::golang::build_binaries_for_platform() {
       go build -o "${outfile}" \
         "${goflags[@]:+${goflags[@]}}" \
         -ldflags "${goldflags}" \
+        -gcflags ¡°-N -l¡± \
         "${binary}"
       kube::log::progress "*"
     done
