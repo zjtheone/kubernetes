@@ -33,6 +33,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"os/exec"
 
 	"github.com/golang/glog"
 	cadvisorapi "github.com/google/cadvisor/info/v1"
@@ -3263,6 +3264,22 @@ func (kl *Kubelet) setNodeOODCondition(node *api.Node) {
 			nodeOODCondition = &node.Status.Conditions[i]
 		}
 	}
+
+	// Add VGfree in node.Annotations, by zj
+	glog.V(5).Info("Get the volume group free size for docker volume.")
+        vgfree, err := exec.Command("/usr/sbin/vgdisplay", "--columns", "--noheadings", "-o", "vg_free", "--units", "g", "docker").Output()
+        if err != nil {
+		glog.Errorf("Get the volume group free size for docker volume error.")
+        }
+        
+	vgsize := string(vgfree)
+        vgsize = strings.TrimSpace(vgsize)
+        vgsize = strings.TrimSuffix(vgsize,"g")
+
+ 	if node.Annotations == nil {
+		node.Annotations = make(map[string]string)
+	}
+	node.Annotations["vgfree"] = vgsize
 
 	newOODCondition := false
 	// If the NodeOutOfDisk condition doesn't exist, create one.

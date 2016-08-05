@@ -684,6 +684,113 @@ func (dm *DockerManager) runContainer(
 		setInfraContainerNetworkConfig(pod, netMode, opts, &dockerOpts)
 	}
 
+	// Create logic volume according to disk quota
+	// Just befor infra-container create
+	/* Logic volume operation
+	***create
+	pvcreate /dev/sdb
+	vgcreate docker /dev/sdb
+	lvcreate -L 10G -n busybox docker -y
+	mkfs.xfs /dev/docker/busybox
+	mount /dev/docker/busybox /export/busybox-export/
+	
+	***extend online, needn't umount
+	lvextend -L +900M /dev/docker/busybox
+	xfs_growfs /dev/docker/busybox
+	
+	***remove
+	lvremove /dev/docker/busybox -y
+	*/
+
+	if container.Name == PodInfraContainerName {
+		diskQuota, diskOK := pod.ObjectMeta.Annotations["disk"]
+		if diskOK {
+			glog.V(3).Infof("Add by zj, got the disk quota \"%v\"",diskQuota)
+		} else {
+			glog.V(3).Infof("Add by zj, didn't got the disk quota, use default")
+			diskQuota = "5G"
+		}
+
+		//lvcreate: Create a logical volume
+
+		//lvcreate -L 10G -n busybox docker -y
+		lvcreatePath, lookupErr := exec.LookPath("lvcreate")
+		if lvcreatePath == ""  {
+			err := fmt.Errorf("unable to do lvcreate: lvcreate not found %v.", lookupErr)
+			return kubecontainer.ContainerID{}, err
+		}
+		VGNAME := "docker"
+		/*
+		vgdevicePath, lookupErr := exec.LookPath("/dev/docker")
+		if vgdevicePath == "" {
+			err := fmt.Errorf("unable to do lvcreate: %v not found.", lookupErr)
+			return kubecontainer.ContainerID{}, err
+		}
+		*/
+		args := []string{"-L", diskQuota, "-n", pod.Name, VGNAME, "-y"}
+		commandString := fmt.Sprintf("%s %s", lvcreatePath, strings.Join(args, " "))
+		glog.V(4).Infof("executing lvcreate command: %s", commandString)
+		
+		out, err := exec.Command(lvcreatePath, "-L", diskQuota, "-n", pod.Name, VGNAME, "-y").Output()
+		if err != nil {
+                        errstr := fmt.Errorf("Error: %v, out:%v.", commandString, out)
+			return kubecontainer.ContainerID{}, errstr
+		}
+
+
+		//mkfs.xfs /dev/{vg Name}/{lv Name}
+		mkfsxfsPath, lookupErr := exec.LookPath("mkfs.xfs")
+		if mkfsxfsPath == "" {
+			err := fmt.Errorf("unable to do mkfs.xfs: %v.", lookupErr)
+			return kubecontainer.ContainerID{}, err
+		}
+		
+		args = []string{fmt.Sprintf("/dev/%s/%s", VGNAME, pod.Name)}
+		commandString = fmt.Sprintf("%s %s", mkfsxfsPath, strings.Join(args, " "))
+		glog.V(4).Infof("executing makfs.xfs command: %s", commandString)
+		
+		out, err = exec.Command(mkfsxfsPath, fmt.Sprintf("/dev/%s/%s", VGNAME, pod.Name)).Output()
+		if err != nil {
+			errstr := fmt.Errorf("Error: %v, out:%v.", commandString, out)
+			return kubecontainer.ContainerID{}, errstr
+		}
+	
+		
+		//mkdir -p /export/{pod.Name}
+		mkdirPath, lookupErr := exec.LookPath("mkdir")
+		if mkdirPath == "" {
+			err := fmt.Errorf("unable to do mkdir: %v.", lookupErr)
+			return kubecontainer.ContainerID{}, err
+		}
+		args = []string{"-P", fmt.Sprintf("/export/%s", pod.Name)}
+		commandString = fmt.Sprintf("%s %s", mkdirPath, strings.Join(args, " "))
+		glog.V(4).Infof("executing mkdir command: %s", commandString)
+		
+		out, err = exec.Command(mkdirPath, "-p", fmt.Sprintf("/export/%s", pod.Name)).Output()
+		if err != nil {
+			errstr := fmt.Errorf("Error: %v, out:%v.", commandString, out)
+			return kubecontainer.ContainerID{}, errstr
+		}
+
+	  	//mount to the specc.volumes[].hostPath.path
+		//mount /dev/{vg Name}/{lv Name} /export/{pod.Name}/
+		mountPath, lookupErr := exec.LookPath("mount")
+		if mountPath == "" {
+                        err := fmt.Errorf("unable to do mount: %v.", lookupErr)
+			return kubecontainer.ContainerID{}, err
+		}
+		args = []string{fmt.Sprintf("/dev/%s/%s", VGNAME, pod.Name), fmt.Sprintf("/export/%s", pod.Name)}
+		commandString = fmt.Sprintf("%s %s", mountPath, strings.Join(args, " "))
+		glog.V(4).Infof("executing mount command: %s", commandString)
+
+		out, err = exec.Command(mountPath, fmt.Sprintf("/dev/%s/%s", VGNAME, pod.Name), fmt.Sprintf("/export/%s", pod.Name)).Output()
+		if err != nil {
+			errstr := fmt.Errorf("Error: %v, out:%v.", commandString, out)
+			return kubecontainer.ContainerID{}, errstr
+		}
+	}	
+	
+	glog.V(3).Infof("Create Logic volume before InfraContainer created with qauto by zj")
 	setEntrypointAndCommand(container, opts, dockerOpts)
 
 	glog.V(3).Infof("Container %v/%v/%v: setting entrypoint \"%v\" and command \"%v\"", pod.Namespace, pod.Name, container.Name, dockerOpts.Config.Entrypoint, dockerOpts.Config.Cmd)
@@ -1258,6 +1365,57 @@ func (dm *DockerManager) killPodWithSyncResult(pod *api.Pod, runningPod kubecont
 		if err := dm.KillContainerInPod(networkContainer.ID, networkSpec, pod, "Need to kill pod.", gracePeriodOverride); err != nil {
 			killContainerResult.Fail(kubecontainer.ErrKillContainer, err.Error())
 			glog.Errorf("Failed to delete container: %v; Skipping pod %q", err, runningPod.ID)
+		}
+  		
+		// remove the mount point and the LogicVolume assigned to this Pod, when kill the PodInfraContainer, by zj.
+		glog.V(4).Infof("Will remove the LogicVolume when kill the PodInfraContainer, by zj.")
+        	// umount the spec.volumes[].hostPath.path
+		umountPath, lookupErr := exec.LookPath("umount")
+		if umountPath == "" {
+                        err := fmt.Errorf("unable to do umount: %v.", lookupErr)
+			glog.Error(err)
+		}
+		args := []string{fmt.Sprintf("/export/%s", pod.Name)}
+		commandString := fmt.Sprintf("%s %s", umountPath, strings.Join(args, " "))
+		glog.V(4).Infof("executing umount command: %s", commandString)
+
+		out, err := exec.Command(umountPath, fmt.Sprintf("/export/%s", pod.Name)).Output()
+		if err != nil {
+			errstr := fmt.Errorf("Error: %v, out:%v.", commandString, out)
+			glog.Error(errstr)
+		}
+
+		// remove the mount point dir
+		rmdirPath, lookupErr := exec.LookPath("rm")
+		if rmdirPath == "" {
+			err := fmt.Errorf("unable to do rmdir: %v.", lookupErr)
+			glog.Error(err)
+		}
+		args = []string{"-rf", fmt.Sprintf("/export/%s", pod.Name)}
+		commandString = fmt.Sprintf("%s %s", rmdirPath, strings.Join(args, " "))
+		glog.V(4).Infof("executing rmdir command: %s", commandString)
+		
+		out, err = exec.Command(rmdirPath, "-rf", fmt.Sprintf("/export/%s", pod.Name)).Output()
+		if err != nil {
+			errstr := fmt.Errorf("Error: %v, out:%v.", commandString, out)
+			glog.Error(errstr)
+		}
+
+		// remove the related LogicVlolume create in dm.runContainer function.
+		lvremovePath, lookupErr := exec.LookPath("lvremove")
+		if lvremovePath == ""  {
+			err := fmt.Errorf("unable to do lvremove: lvremove not found %v.", lookupErr)
+			glog.Error(err)
+		}
+		VGNAME := "docker"
+		args = []string{fmt.Sprintf("/dev/%s/%s", VGNAME, pod.Name), "-y"}
+		commandString = fmt.Sprintf("%s %s", lvremovePath, strings.Join(args, " "))
+		glog.V(4).Infof("executing lvcreate command: %s", commandString)
+		
+		out, err = exec.Command(lvremovePath, fmt.Sprintf("/dev/%s/%s", VGNAME, pod.Name), "-y").Output()
+		if err != nil {
+                        errstr := fmt.Errorf("Error: %v, out:%v.", commandString, out)
+			glog.Error(errstr)
 		}
 	}
 	return
